@@ -10,7 +10,9 @@ import rpy2.robjects.numpy2ri
 import ctypes
 from ctypes import cdll
 from sklearn.metrics import log_loss
-
+from rpy2.robjects.conversion import localconverter
+from copy import deepcopy
+from sklearn.linear_model import ElasticNet
 
 def generate_random_correlated(n,cov_mat,num_levels,sparsity=0,clustering=0,RNG=0,noise_sigma=0,beta=None):
     '''
@@ -274,3 +276,103 @@ def performance_metrics(beta, beta_star, groups, y_test, X_test,intercept=0,clas
         return nnz, res, estimation, purity, n_levels,logloss
     
     return nnz, res, estimation, purity, purity_nnz, n_levels
+
+
+   
+def validate_scope(df_train, X_val, y_train, y_val, p,n_cat, n_lambda, rcont = 0,lambda_min=1e-5, lambda_max=1e5,gamma=3.7,nfolds=1 ):
+    '''
+    SCOPE includes an intercept by default. So this functions returns a vector of size p+1, where the last entry is the intercept
+    '''
+    Lambda = np.tile(np.logspace(np.log10(lambda_min), np.log10(lambda_max), n_lambda)[::-1], (n_cat, 1))
+    
+  
+    
+    rpy2.robjects.numpy2ri.activate()
+    pandas2ri.activate()
+    importr('CatReg')
+    r = robjects.r
+    
+    with localconverter(ro.default_converter + pandas2ri.converter):
+      r_from_pd_df_train = ro.conversion.py2rpy(df_train)
+      
+      
+    rY = robjects.r.matrix(y_train, nrow=len(y_train), ncol=1)
+
+
+    rLambda = robjects.r.matrix(Lambda, nrow=n_cat, ncol=n_lambda)
+    
+    t1 = time.time()
+    scope_mode = r['scope'](r_from_pd_df_train, rY, gamma, rLambda,  early_stopping = False,  nfolds = nfolds, return_full_beta = True)
+    t2 = time.time()
+
+    
+    with localconverter(ro.default_converter + pandas2ri.converter):
+        sc_df0 = ro.conversion.rpy2py(scope_mode) 
+
+    idx_last = 0
+    if nfolds == 1:
+        B = np.zeros((p+1,n_lambda))
+        for i in range(n_cat):
+            Bb = sc_df0['beta.full'].byindex(1)[1].byindex(i)[1]
+            ob = df_train[str(int(i))].cat.categories
+            cats = [int(x) for x in ob]
+            idx_sorted = np.argsort(cats)
+            for j in range(len(cats)):
+                for k in range(n_lambda):
+                    B[idx_last+j,k] = Bb[idx_sorted[j]][k]
+            idx_last = idx_last + len(cats)
+        if rcont > 0:
+            for i in range(rcont+1):
+                Bb = sc_df0['beta.full'].byindex(0)[1][i] ## np array
+                for k in range(n_lambda):
+                    B[idx_last+i,k] = Bb[k]
+        else:
+            Bb = sc_df0['beta.full'].byindex(0)[1] ## np array
+            for k in range(n_lambda):
+                B[idx_last,k] = Bb[k]
+
+        best_beta_scope = np.zeros(p+1)
+        best_val = float('inf')
+        for k in range(n_lambda):
+            beta = B[:,k]
+            val_error = np.linalg.norm(y_val-X_val@beta[:-1] - beta[-1])
+            if val_error <best_val:
+                best_val = val_error
+                best_beta_scope = deepcopy(beta)
+    else: ##Get best beta from cross_Validation
+        best_beta_scope = np.zeros(p+1)
+        for i in range(n_cat):
+            Bb = sc_df0['beta.best'].byindex(1)[1].byindex(i)[1]
+            ob = df_train[str(int(i))].cat.categories
+            cats = [int(x) for x in ob]
+            idx_sorted = np.argsort(cats)
+            for j in range(len(cats)):
+                best_beta_scope[idx_last+j] = Bb[idx_sorted[j]]
+            idx_last = idx_last + len(cats)
+
+            best_beta_scope[-rcont-1:] = sc_df0['beta.best'].byindex(0)[1]
+            
+            
+            
+    return best_beta_scope, t2-t1
+
+
+def validate_Elasticnet(X,y,Xval,yval,lambda1s = [0.0],lambda2s = [0.0]):
+    loss = np.zeros((len(lambda1s), len(lambda2s)))
+    best_loss = 1e6
+    best_beta = 0
+    best_intercept = 0
+    start = time.time()
+    for i in range(len(lambda1s)):
+        for j in range(len(lambda2s)):
+            lambda1 = lambda1s[i]
+            lambda2 = lambda2s[j]
+            regr = ElasticNet(lambda1+lambda2,l1_ratio=lambda1/(lambda1 + lambda2),random_state=0)
+            regr.fit(X, y)
+            loss[i,j] = np.linalg.norm(yval-Xval@regr.coef_ - regr.intercept_)/np.linalg.norm(yval)
+            if loss[i,j] < best_loss:
+                best_loss = loss[i,j]
+                best_beta = regr.coef_
+                best_intercept = regr.intercept_
+    end = time.time()
+    return best_beta,best_intercept, end - start
