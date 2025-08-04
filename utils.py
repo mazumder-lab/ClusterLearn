@@ -155,35 +155,6 @@ def BCD_wrapper(X,y,Xval,yval,Xcont=None,Xcontval=None,classification=False,numl
 
 
 
-    acc = np.zeros((len(lambda1s), len(lambda2s)))
-    best_accuracy = 0
-    best_beta = 0
-    best_intercept = 0
-    start = time.time()
-    for i in range(len(lambda1s)):
-        for j in range(len(lambda2s)):
-            lambda1 = lambda1s[i]
-            lambda2 = lambda2s[j]
-            if lambda1 == 0:
-                regr =  LogisticRegression(penalty='l2',C=1/lambda2,random_state=0,solver='liblinear')
-            elif lambda2 == 0:
-                regr =  LogisticRegression(penalty='l1',C=1/lambda1,random_state=0,solver='liblinear')
-            else:
-                regr = LogisticRegression(penalty='elasticnet',C=1/(lambda1+2*lambda2),l1_ratio=lambda1/(lambda1+2*lambda2),random_state=0,solver='saga')
-            regr.fit(X, y)
-            #acc[i,j] = regr.score(Xval,yval)
-
-            probabilty = 1/(np.exp(-Xval@regr.coef_.flatten() - regr.intercept_) + 1)
-            logloss = log_loss(yval,probabilty,normalize=True)
-            acc[i,j] = 1 - logloss
-
-            if acc[i,j] > best_accuracy:
-                best_accuracy = acc[i,j]
-                best_beta = regr.coef_
-                best_intercept = regr.intercept_
-    end = time.time()
-    return best_beta.flatten(),best_intercept[0], end - start
-
 
 def classification_metrics(beta, groups, y_test, X_test,intercept=0):
     xtb = X_test@beta + intercept
