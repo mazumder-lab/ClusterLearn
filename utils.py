@@ -376,3 +376,88 @@ def validate_Elasticnet(X,y,Xval,yval,lambda1s = [0.0],lambda2s = [0.0]):
                 best_intercept = regr.intercept_
     end = time.time()
     return best_beta,best_intercept, end - start
+
+
+ 
+def validate_logistic_scope(df_train, df_test, y_train, p,n_cat, rcont = 0,gamma=3.7,nfolds=1,nlambda=100,X_val=None,y_val=None ):
+    '''
+    SCOPE includes an intercept by default. So this functions returns a vector of size p+1, where the last entry is the intercept
+    '''
+    
+    
+    rpy2.robjects.numpy2ri.activate()
+    pandas2ri.activate()
+    importr('CatReg')
+    r = robjects.r
+    
+    with localconverter(ro.default_converter + pandas2ri.converter):
+        r_from_pd_df_train = ro.conversion.py2rpy(df_train)
+
+      
+      
+    #rY = robjects.r.matrix(y_train, nrow=len(y_train), ncol=1)
+    rY = robjects.vectors.IntVector(y_train)
+
+    
+    t1 = time.time()
+    #scope_mode = r['scope.logistic'](r_from_pd_df_train, rY, gamma, rLambda,  nfolds = nfolds, return_full_beta = True)
+    scope_mode = r['scope.logistic'](r_from_pd_df_train, rY, gamma=gamma,  nfolds = nfolds, return_full_beta = False,nlambda=nlambda)
+    t2 = time.time()
+
+
+    with localconverter(ro.default_converter + pandas2ri.converter):
+        sc_df0 = ro.conversion.rpy2py(scope_mode) 
+        if nfolds > 1:
+            pred = r['predict'](scope_mode,df_test,probs=True)
+            pred = ro.conversion.rpy2py(pred) 
+        else:
+            pred=None
+
+
+    idx_last = 0
+    #return sc_df0
+    if nfolds > 1:
+        best_beta_scope = np.zeros(p+1)
+        for i in range(n_cat):
+            Bb = sc_df0['beta.best'].byindex(1)[1].byindex(i)[1]
+            ob = df_train[str(int(i))].cat.categories
+            cats = [int(x) for x in ob]
+            idx_sorted = np.argsort(cats)
+            for j in range(len(cats)):
+                best_beta_scope[idx_last+j] = Bb[idx_sorted[j]]
+            idx_last = idx_last + len(cats)
+
+            best_beta_scope[-rcont-1:-1] = sc_df0['beta.best'].byindex(0)[1][1:]
+            best_beta_scope[-1] =  sc_df0['beta.best'].byindex(0)[1][0]
+    else:
+        B = [[] for _ in range(p+1)]
+        for i in range(n_cat):
+            Bb = sc_df0['beta.full'].byindex(1)[1].byindex(i)[1]
+            ob = df_train[str(int(i))].cat.categories
+            cats = [int(x) for x in ob]
+            idx_sorted = np.argsort(cats)
+            for j in range(len(cats)):
+                B[idx_last+j] = Bb[idx_sorted[j]]
+            idx_last = idx_last + len(cats)
+        if rcont > 0:
+            for i in range(rcont+1):
+                Bb = sc_df0['beta.full'].byindex(0)[1][i] ## np array
+                B[idx_last+i] = Bb
+        else:
+            Bb = sc_df0['beta.full'].byindex(0)[1] ## np array
+            B[idx_last] = Bb
+
+        best_beta_scope = np.zeros(p+1)
+        best_val = float('inf')
+        for k in range(len(B[0])):
+            beta = np.array([l[k] for l in B])
+            probabilty = 1/(np.exp(-X_val@beta[:-1] - beta[-1]) + 1)
+            logloss = log_loss(y_val,probabilty,normalize=True)
+            if logloss <best_val:
+                best_val = logloss
+                best_beta_scope = deepcopy(beta)
+            
+            
+            
+    return best_beta_scope, t2-t1,pred
+

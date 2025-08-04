@@ -4,3 +4,4 @@ __pycache__
 /results
 /insurance
 BCD_solver.so
+*.log
